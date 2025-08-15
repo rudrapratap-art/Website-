@@ -1,49 +1,51 @@
-from flask import Flask, request, jsonify, send_file, render_template
+from flask import Flask, request, send_file, render_template_string
 import yt_dlp
 import os
 import uuid
 
 app = Flask(__name__)
 
-@app.route("/")
-def home():
-    return render_template("index.html")
+HTML_FORM = """
+<!doctype html>
+<title>Video Downloader</title>
+<h2>Enter Video Link</h2>
+<form action="/download" method="post">
+    <input type="text" name="url" placeholder="Paste video URL here" style="width: 400px;" required>
+    <br><br>
+    <input type="submit" value="Download">
+</form>
+"""
 
-@app.route("/api/download", methods=["POST"])
+@app.route("/", methods=["GET"])
+def index():
+    return render_template_string(HTML_FORM)
+
+@app.route("/download", methods=["POST"])
 def download():
-    data = request.get_json()
-    video_url = data.get("url")
-    if not video_url:
-        return jsonify({"success": False, "message": "No URL provided"})
+    url = request.form.get("url")
+    if not url:
+        return "No URL provided!", 400
 
-    file_id = str(uuid.uuid4())
-    output_path = f"downloads/{file_id}.mp4"
+    video_id = str(uuid.uuid4())
+    output_path = f"{video_id}.mp4"
+
+    # yt-dlp options with cookies support
+    ydl_opts = {
+        'format': 'mp4',
+        'outtmpl': output_path,
+        'quiet': True,
+        'cookiefile': 'cookies.txt',  # Use YouTube login cookies
+    }
 
     try:
-        ydl_opts = {
-            'format': 'mp4',
-            'outtmpl': output_path,
-            'quiet': True
-        }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([video_url])
-
-        return jsonify({
-            "success": True,
-            "downloadLink": f"/download/{file_id}"
-        })
+            ydl.download([url])
     except Exception as e:
-        return jsonify({"success": False, "message": str(e)})
+        return f"Error: {str(e)}", 500
 
-@app.route("/download/<file_id>")
-def serve_file(file_id):
-    path = f"downloads/{file_id}.mp4"
-    if os.path.exists(path):
-        return send_file(path, as_attachment=True)
-    return "File not found", 404
+    return send_file(output_path, as_attachment=True, download_name="video.mp4")
 
 if __name__ == "__main__":
-    # For local testing only
-    os.makedirs("downloads", exist_ok=True)
-    port = int(os.environ.get("PORT", 5000))  # Render will provide PORT
-    app.run(host="0.0.0.0", port=port, debug=True)
+    # Use Gunicorn in production, only for local test
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
