@@ -7,14 +7,14 @@ HTML_FORM = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Video Downloader</title>
+    <title>Instant Video Link</title>
 </head>
 <body style="font-family: Arial; text-align: center; margin-top: 50px;">
     <h2>Paste Video Link</h2>
     <form action="/download" method="post">
         <input type="text" name="url" placeholder="Enter video link" size="50" required>
         <br><br>
-        <button type="submit">Get Download Link</button>
+        <button type="submit">Get Direct Link</button>
     </form>
     {% if link %}
         <h3>Direct Download Link:</h3>
@@ -31,22 +31,28 @@ def index():
     return render_template_string(HTML_FORM)
 
 @app.route("/download", methods=["POST"])
-def download():
+def get_link():
     url = request.form.get("url")
     if not url:
         return render_template_string(HTML_FORM, error="No URL provided!")
 
+    # Only fetch metadata, not download
     ydl_opts = {
-        'format': 'best',  # You can change to 'bestvideo+bestaudio'
-        'quiet': True,
-        'cookiefile': 'cookies.txt',  # Use cookies for YouTube login bypass
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "format": "best",
+        # Remove cookiefile to avoid requiring login
     }
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             direct_url = info.get("url")
-            return render_template_string(HTML_FORM, link=direct_url)
+            if direct_url:
+                return render_template_string(HTML_FORM, link=direct_url)
+            else:
+                return render_template_string(HTML_FORM, error="Could not get direct link.")
     except Exception as e:
         return render_template_string(HTML_FORM, error=str(e))
 
