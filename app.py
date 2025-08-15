@@ -44,4 +44,4 @@ def serve_file(file_id):
 
 if __name__ == "__main__":
     os.makedirs("downloads", exist_ok=True)
-    app.run(debug=True)
+    app.run(debug=True)  # Only for local testing
