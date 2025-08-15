@@ -43,5 +43,7 @@ def serve_file(file_id):
     return "File not found", 404
 
 if __name__ == "__main__":
+    # For local testing only
     os.makedirs("downloads", exist_ok=True)
-    app.run(debug=True)  # Only for local testing
+    port = int(os.environ.get("PORT", 5000))  # Render will provide PORT
+    app.run(host="0.0.0.0", port=port, debug=True)
