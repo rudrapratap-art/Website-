@@ -1,63 +1,66 @@
-from flask import Flask, render_template_string, request
+from flask import Flask, request, render_template_string
 import os
 import yt_dlp
 
 app = Flask(__name__)
 
-# Simple HTML form
-HTML_FORM = """
+# ====== Save cookies from environment variable ======
+COOKIES_FILE = "cookies.txt"
+cookies_content = os.environ.get("YOUTUBE_COOKIES")
+if cookies_content:
+    with open(COOKIES_FILE, "w", encoding="utf-8") as f:
+        f.write(cookies_content)
+    print("✅ Cookies file saved from environment variable.")
+else:
+    print("⚠ No cookies found in environment variable YOUTUBE_COOKIES.")
+
+# ====== HTML Template ======
+HTML_PAGE = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Video Link Getter</title>
+    <title>YouTube Direct Link Generator</title>
 </head>
 <body>
-    <h2>Enter Video Link</h2>
-    <form method="post" action="/getlink">
-        <input type="text" name="video_url" placeholder="Paste video link here" style="width:300px;">
+    <h1>Enter YouTube Link</h1>
+    <form action="/download" method="post">
+        <input type="text" name="url" placeholder="YouTube URL" required>
         <button type="submit">Get Direct Link</button>
     </form>
-    {% if video_link %}
-        <h3>Direct Video Link:</h3>
-        <a href="{{ video_link }}" target="_blank">{{ video_link }}</a>
+    {% if video_url %}
+        <p><a href="{{ video_url }}" target="_blank">Click here to watch/download</a></p>
     {% elif error %}
-        <h3 style="color:red;">Error: {{ error }}</h3>
+        <p style="color:red;">Error: {{ error }}</p>
     {% endif %}
 </body>
 </html>
 """
 
-def get_direct_link(url):
-    # Read cookies from environment variable
-    cookies_data = os.environ.get("YOUTUBE_COOKIES", "")
-    cookies_path = "cookies.txt"
-    with open(cookies_path, "w", encoding="utf-8") as f:
-        f.write(cookies_data)
-
-    ydl_opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "skip_download": True,
-        "format": "best",
-        "cookies": cookies_path,
-    }
-
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
-        return info.get("url")
-
+# ====== Routes ======
 @app.route("/", methods=["GET"])
-def index():
-    return render_template_string(HTML_FORM)
+def home():
+    return render_template_string(HTML_PAGE)
 
-@app.route("/getlink", methods=["POST"])
-def getlink():
-    url = request.form.get("video_url")
+@app.route("/download", methods=["POST"])
+def download():
+    url = request.form.get("url")
+    if not url:
+        return render_template_string(HTML_PAGE, error="No URL provided")
+
     try:
-        video_link = get_direct_link(url)
-        return render_template_string(HTML_FORM, video_link=video_link)
+        ydl_opts = {
+            'cookiefile': COOKIES_FILE if cookies_content else None,
+            'format': 'best',
+            'quiet': True,
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            video_url = info.get("url")
+        return render_template_string(HTML_PAGE, video_url=video_url)
+
     except Exception as e:
-        return render_template_string(HTML_FORM, error=str(e))
+        return render_template_string(HTML_PAGE, error=str(e))
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
