@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Video Result</title>
+</head>
+<body>
+    {% if error %}
+        <p style="color: red;">Error: {{ error }}</p>
+        <a href="/">Go Back</a>
+    {% else %}
+        <h3>Your Video Link:</h3>
+        <p><a href="{{ video_url }}" target="_blank">Click here to watch/download</a></p>
+        <a href="/">Go Back</a>
+    {% endif %}
+</body>
+</html>
