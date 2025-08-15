@@ -1,60 +1,38 @@
-from flask import Flask, request, render_template_string
+from flask import Flask, request, jsonify, render_template
 import yt_dlp
+import os
 
 app = Flask(__name__)
 
-HTML_FORM = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Instant Video Link</title>
-</head>
-<body style="font-family: Arial; text-align: center; margin-top: 50px;">
-    <h2>Paste Video Link</h2>
-    <form action="/download" method="post">
-        <input type="text" name="url" placeholder="Enter video link" size="50" required>
-        <br><br>
-        <button type="submit">Get Direct Link</button>
-    </form>
-    {% if link %}
-        <h3>Direct Download Link:</h3>
-        <a href="{{ link }}" target="_blank">{{ link }}</a>
-    {% elif error %}
-        <p style="color: red;">{{ error }}</p>
-    {% endif %}
-</body>
-</html>
-"""
-
-@app.route("/", methods=["GET"])
+@app.route('/')
 def index():
-    return render_template_string(HTML_FORM)
+    return render_template('index.html')  # basic form to paste link
 
-@app.route("/download", methods=["POST"])
-def get_link():
-    url = request.form.get("url")
+@app.route('/download', methods=['POST'])
+def download():
+    url = request.form.get('url')
     if not url:
-        return render_template_string(HTML_FORM, error="No URL provided!")
-
-    # Only fetch metadata, not download
-    ydl_opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "skip_download": True,
-        "format": "best",
-        # Remove cookiefile to avoid requiring login
-    }
+        return jsonify({"error": "No URL provided"}), 400
 
     try:
+        ydl_opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "skip_download": True,
+            "format": "best",
+            "cookies": "cookies.txt",  # Use your exported cookies
+        }
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
-            direct_url = info.get("url")
-            if direct_url:
-                return render_template_string(HTML_FORM, link=direct_url)
-            else:
-                return render_template_string(HTML_FORM, error="Could not get direct link.")
-    except Exception as e:
-        return render_template_string(HTML_FORM, error=str(e))
+            video_url = info.get("url")
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+        return jsonify({"video_url": video_url})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+if __name__ == '__main__':
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port)
