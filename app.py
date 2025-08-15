@@ -1,19 +1,29 @@
-from flask import Flask, request, send_file, render_template_string
+from flask import Flask, request, render_template_string
 import yt_dlp
-import os
-import uuid
 
 app = Flask(__name__)
 
 HTML_FORM = """
-<!doctype html>
-<title>Video Downloader</title>
-<h2>Enter Video Link</h2>
-<form action="/download" method="post">
-    <input type="text" name="url" placeholder="Paste video URL here" style="width: 400px;" required>
-    <br><br>
-    <input type="submit" value="Download">
-</form>
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Video Downloader</title>
+</head>
+<body style="font-family: Arial; text-align: center; margin-top: 50px;">
+    <h2>Paste Video Link</h2>
+    <form action="/download" method="post">
+        <input type="text" name="url" placeholder="Enter video link" size="50" required>
+        <br><br>
+        <button type="submit">Get Download Link</button>
+    </form>
+    {% if link %}
+        <h3>Direct Download Link:</h3>
+        <a href="{{ link }}" target="_blank">{{ link }}</a>
+    {% elif error %}
+        <p style="color: red;">{{ error }}</p>
+    {% endif %}
+</body>
+</html>
 """
 
 @app.route("/", methods=["GET"])
@@ -24,28 +34,21 @@ def index():
 def download():
     url = request.form.get("url")
     if not url:
-        return "No URL provided!", 400
+        return render_template_string(HTML_FORM, error="No URL provided!")
 
-    video_id = str(uuid.uuid4())
-    output_path = f"{video_id}.mp4"
-
-    # yt-dlp options with cookies support
     ydl_opts = {
-        'format': 'mp4',
-        'outtmpl': output_path,
+        'format': 'best',  # You can change to 'bestvideo+bestaudio'
         'quiet': True,
-        'cookiefile': 'cookies.txt',  # Use YouTube login cookies
+        'cookiefile': 'cookies.txt',  # Use cookies for YouTube login bypass
     }
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
+            info = ydl.extract_info(url, download=False)
+            direct_url = info.get("url")
+            return render_template_string(HTML_FORM, link=direct_url)
     except Exception as e:
-        return f"Error: {str(e)}", 500
-
-    return send_file(output_path, as_attachment=True, download_name="video.mp4")
+        return render_template_string(HTML_FORM, error=str(e))
 
 if __name__ == "__main__":
-    # Use Gunicorn in production, only for local test
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=5000)
