@@ -1,9 +1,45 @@
 <!DOCTYPE html>
 <html>
 <head>
+  <title>Video Downloader</title>
+  <style>
+    body { font-family: Arial, sans-serif; text-align: center; margin-top: 50px; }
+    input { width: 300px; padding: 8px; }
+    button { padding: 8px 16px; margin-left: 5px; cursor: pointer; }
+    #status { margin-top: 10px; font-weight: bold; }
+    a { display: block; margin-top: 10px; font-size: 18px; color: blue; }
+  </style>
     <title>Video Link Generator</title>
 </head>
 <body>
+  <h1>Video Downloader</h1>
+  <input type="text" id="videoURL" placeholder="Paste video link here">
+  <button onclick="downloadVideo()">Download</button>
+  <p id="status"></p>
+  <div id="result"></div>
+
+  <script>
+    async function downloadVideo() {
+      const url = document.getElementById("videoURL").value;
+      document.getElementById("status").textContent = "Processing...";
+      document.getElementById("result").innerHTML = "";
+
+      const res = await fetch("/api/download", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url })
+      });
+      const data = await res.json();
+      document.getElementById("status").textContent = "";
+
+      if (data.success) {
+        document.getElementById("result").innerHTML =
+          `<a href="${data.downloadLink}">Click here to download</a>`;
+      } else {
+        document.getElementById("result").textContent = "Error: " + data.message;
+      }
+    }
+  </script>
     <h2>Enter Video URL</h2>
     <form action="/download" method="POST">
         <input type="text" name="url" placeholder="Paste video link here" size="50" required>
