@@ -2,7 +2,6 @@ from flask import Flask, request, render_template_string, send_file, make_respon
 import os
 import yt_dlp
 import subprocess
-import tempfile
 import uuid
 import threading
 import time
@@ -18,10 +17,6 @@ if cookies_content:
     print("✅ Cookies file saved from environment variable.")
 else:
     print("⚠ No cookies found in environment variable YOUTUBE_COOKIES.")
-
-# ====== Temporary storage for merged files ======
-MERGED_FILES_DIR = "merged_files"
-os.makedirs(MERGED_FILES_DIR, exist_ok=True)
 
 # ====== HTML Templates ======
 HOME_PAGE = """
@@ -321,6 +316,20 @@ HOME_PAGE = """
                         <path d="M12 2C6.48 2 2 6.48 2 12C2 17.52 6.48 22 12 22C17.52 22 22 17.52 22 12C22 6.48 17.52 2 12 2ZM13 17H11V15H13V17ZM13 13H11V7H13V13Z" fill="var(--youtube-red)"/>
                     </svg>
                     {{ error }}
+                </p>
+            </div>
+        {% endif %}
+        
+        {% if video_url %}
+            <div class="result">
+                <p>
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="vertical-align: middle; margin-right: 6px;">
+                        <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z" fill="#4CAF50"/>
+                    </svg>
+                    Video ready! Click below to download.
+                </p>
+                <p style="margin-top: 12px;">
+                    <a href="{{ video_url }}" target="_blank">⬇️ Download Merged Video</a>
                 </p>
             </div>
         {% endif %}
@@ -819,7 +828,10 @@ def get_formats():
             return render_template_string(FORMATS_PAGE, url=url, formats=sorted_formats)
 
     except Exception as e:
-        return render_template_string(HOME_PAGE, error=str(e))
+        import traceback
+        print("❌ get_formats error:")
+        traceback.print_exc()
+        return render_template_string(HOME_PAGE, error=f"Fetch error: {str(e)}")
 
 @app.route("/download", methods=["POST"])
 def download():
@@ -832,28 +844,38 @@ def download():
 
     try:
         file_id = str(uuid.uuid4())
-        video_path = os.path.join(tempfile.gettempdir(), f"{file_id}_video.mp4")
-        audio_path = os.path.join(tempfile.gettempdir(), f"{file_id}_audio.m4a")
-        output_path = os.path.join(MERGED_FILES_DIR, f"{file_id}.mp4")
+        video_path = f"/tmp/{file_id}_video.mp4"
+        audio_path = f"/tmp/{file_id}_audio.m4a"
+        output_path = f"/tmp/{file_id}.mp4"
         
+        print(f"📥 Starting download for: {url}")
+        print(f"📹 Video format: {video_format}")
+        print(f"🎵 Audio format: {audio_format}")
+
+        # Download video
         ydl_opts_video = {
             'cookiefile': COOKIES_FILE if cookies_content else None,
             'format': video_format,
             'outtmpl': video_path,
-            'quiet': True,
+            'quiet': False,
         }
         with yt_dlp.YoutubeDL(ydl_opts_video) as ydl:
+            print("⏬ Downloading video...")
             ydl.download([url])
-        
+
+        # Download audio
         ydl_opts_audio = {
             'cookiefile': COOKIES_FILE if cookies_content else None,
             'format': audio_format,
             'outtmpl': audio_path,
-            'quiet': True,
+            'quiet': False,
         }
         with yt_dlp.YoutubeDL(ydl_opts_audio) as ydl:
+            print("⏬ Downloading audio...")
             ydl.download([url])
-        
+
+        # Merge with ffmpeg
+        print("🎬 Merging with ffmpeg...")
         cmd = [
             'ffmpeg', '-y',
             '-i', video_path,
@@ -863,69 +885,55 @@ def download():
             '-strict', 'experimental',
             output_path
         ]
-        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        result = subprocess.run(cmd, capture_output=True, text=True)
         
+        if result.returncode != 0:
+            print("❌ FFmpeg failed:")
+            print("STDOUT:", result.stdout)
+            print("STDERR:", result.stderr)
+            return render_template_string(HOME_PAGE, error=f"Merge failed: {result.stderr}")
+
+        print(f"✅ Merged video saved to {output_path}")
+
+        # Cleanup
         os.remove(video_path)
         os.remove(audio_path)
-        
+        print("🧹 Temp files removed")
+
         download_url = f"/download-file/{file_id}.mp4"
-        
-        response = make_response(render_template_string(HOME_PAGE, video_url=download_url))
-        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
-        response.headers['Pragma'] = 'no-cache'
-        response.headers['Expires'] = '0'
-        
-        return response
+        return render_template_string(HOME_PAGE, video_url=download_url)
 
     except Exception as e:
-        if 'video_path' in locals() and os.path.exists(video_path):
-            os.remove(video_path)
-        if 'audio_path' in locals() and os.path.exists(audio_path):
-            os.remove(audio_path)
-        return render_template_string(HOME_PAGE, error=f"Processing error: {str(e)}")
+        print("💥 Server error:")
+        import traceback
+        traceback.print_exc()
+        return render_template_string(HOME_PAGE, error=f"Server error: {str(e)}")
 
 @app.route("/download-file/<filename>")
 def download_file(filename):
-    file_path = os.path.join(MERGED_FILES_DIR, filename)
-    
+    file_path = f"/tmp/{filename}"
     if not os.path.exists(file_path):
         return "File not found", 404
-    
+
     def cleanup():
         time.sleep(30)
         try:
             os.remove(file_path)
-        except:
-            pass
+            print(f"🗑️ Cleaned up {file_path}")
+        except Exception as e:
+            print(f"Cleanup error: {e}")
     
-    threading.Thread(target=cleanup).start()
-    
+    threading.Thread(target=cleanup, daemon=True).start()
+
     response = send_file(
         file_path,
         mimetype='video/mp4',
         as_attachment=True,
         download_name=filename
     )
-    
     response.headers['Content-Disposition'] = f'attachment; filename="{filename}"'
     response.headers['X-Content-Type-Options'] = 'nosniff'
-    
     return response
-
-def cleanup_expired_files():
-    while True:
-        time.sleep(3600)
-        try:
-            now = time.time()
-            for file in os.listdir(MERGED_FILES_DIR):
-                file_path = os.path.join(MERGED_FILES_DIR, file)
-                if os.path.isfile(file_path) and now - os.path.getmtime(file_path) > 3600:
-                    os.remove(file_path)
-        except Exception as e:
-            print(f"Cleanup error: {e}")
-
-cleanup_thread = threading.Thread(target=cleanup_expired_files, daemon=True)
-cleanup_thread.start()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
