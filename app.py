@@ -1,183 +1,908 @@
-from flask import Flask, request, render_template_string, send_from_directory, jsonify, abort
+from flask import Flask, request, render_template_string, Response
 import os
 import yt_dlp
-import uuid
+import subprocess
+import signal
 
 app = Flask(__name__)
 
-# Create downloads folder
-DOWNLOAD_FOLDER = "downloads"
-os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
-
-# Store progress in memory
-progress_data = {}
-
+# ====== Save cookies from environment variable ======
 COOKIES_FILE = "cookies.txt"
 cookies_content = os.environ.get("YOUTUBE_COOKIES")
 if cookies_content:
     with open(COOKIES_FILE, "w", encoding="utf-8") as f:
         f.write(cookies_content)
+    print("✅ Cookies file saved from environment variable.")
+else:
+    print("⚠ No cookies found in environment variable YOUTUBE_COOKIES.")
 
-# ====== HTML Template ======
-HTML_PAGE = """
+# ====== HTML Templates ======
+HOME_PAGE = """
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>YouTube Downloader</title>
-    <script>
-        function checkProgress(task_id) {
-            fetch('/progress/' + task_id)
-            .then(response => response.json())
-            .then(data => {
-                if (data.status === "downloading" || data.status === "merging") {
-                    document.getElementById("progress").value = data.percent;
-                    document.getElementById("status").innerText = data.status + " (" + data.percent + "%)";
-                    setTimeout(() => checkProgress(task_id), 1000);
-                } else if (data.status === "finished") {
-                    document.getElementById("progress").value = 100;
-                    document.getElementById("status").innerText = "✅ Finished!";
-                    document.getElementById("download-link").innerHTML = 
-                        '<a href="' + data.url + '" target="_blank">⬇ Download Ready</a>';
-                } else if (data.status === "error") {
-                    document.getElementById("download-link").innerHTML = 
-                        '<p style="color:red;">Error: ' + data.error + '</p>';
-                }
-            });
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>🎥 YouTube Direct Link Generator</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600&display=swap');
+        
+        :root {
+            --youtube-red: #ff0000;
+            --youtube-red-hover: #cc0000;
+            --glass-bg: rgba(255, 255, 255, 0.08);
+            --glass-border: rgba(255, 255, 255, 0.18);
+            --text-shadow: 0 2px 4px rgba(0,0,0,0.25);
         }
-    </script>
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Poppins', sans-serif;
+            background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);
+            background-attachment: fixed;
+            color: white;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+            overflow-x: hidden;
+            position: relative;
+        }
+        
+        body::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: 
+                radial-gradient(circle at 10% 20%, rgba(255, 0, 0, 0.05) 0%, transparent 20%),
+                radial-gradient(circle at 90% 80%, rgba(0, 100, 255, 0.05) 0%, transparent 20%);
+            pointer-events: none;
+            z-index: -1;
+        }
+        
+        .container {
+            background: var(--glass-bg);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid var(--glass-border);
+            border-radius: 20px;
+            padding: 32px;
+            width: 100%;
+            max-width: 520px;
+            box-shadow: 
+                0 8px 32px rgba(0, 0, 0, 0.3),
+                0 0 15px rgba(255, 0, 0, 0.1);
+            transform: translateY(0);
+            transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }
+        
+        .container:hover {
+            transform: translateY(-5px);
+            box-shadow: 
+                0 12px 40px rgba(0, 0, 0, 0.4),
+                0 0 25px rgba(255, 0, 0, 0.15);
+        }
+        
+        .header {
+            text-align: center;
+            margin-bottom: 28px;
+            position: relative;
+        }
+        
+        h1 {
+            font-size: 2.2rem;
+            font-weight: 600;
+            margin-bottom: 12px;
+            background: linear-gradient(90deg, #ff0000, #ff5e5e);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+            text-shadow: var(--text-shadow);
+            letter-spacing: -0.5px;
+        }
+        
+        .subtitle {
+            color: rgba(255, 255, 255, 0.7);
+            font-size: 1.05rem;
+            max-width: 400px;
+            margin: 0 auto;
+            line-height: 1.5;
+        }
+        
+        form {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        
+        .input-group {
+            position: relative;
+        }
+        
+        .input-group::after {
+            content: '🔗';
+            position: absolute;
+            left: 15px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: rgba(255, 255, 255, 0.6);
+            font-size: 1.1rem;
+        }
+        
+        input[type="text"] {
+            width: 100%;
+            padding: 16px 20px 16px 45px;
+            border-radius: 14px;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            background: rgba(255, 255, 255, 0.05);
+            color: white;
+            font-size: 1.05rem;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+        }
+        
+        input[type="text"]:focus {
+            outline: none;
+            border-color: rgba(255, 0, 0, 0.4);
+            background: rgba(255, 255, 255, 0.08);
+            box-shadow: 0 0 0 3px rgba(255, 0, 0, 0.2);
+        }
+        
+        input[type="text"]::placeholder {
+            color: rgba(255, 255, 255, 0.5);
+        }
+        
+        button {
+            padding: 16px;
+            background: linear-gradient(90deg, var(--youtube-red), #e60000);
+            color: white;
+            border: none;
+            border-radius: 14px;
+            font-size: 1.1rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 20px rgba(255, 0, 0, 0.3);
+            letter-spacing: 0.5px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        button:hover {
+            background: linear-gradient(90deg, var(--youtube-red-hover), #b30000);
+            transform: translateY(-2px);
+            box-shadow: 0 6px 25px rgba(255, 0, 0, 0.4);
+        }
+        
+        button:active {
+            transform: translateY(0);
+        }
+        
+        button::after {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -60%;
+            width: 20px;
+            height: 200%;
+            background: rgba(255, 255, 255, 0.2);
+            transform: rotate(30deg);
+            transition: all 0.6s;
+        }
+        
+        button:hover::after {
+            left: 120%;
+        }
+        
+        .result, .error {
+            padding: 20px;
+            border-radius: 16px;
+            margin-top: 20px;
+            animation: fadeIn 0.4s ease;
+            backdrop-filter: blur(8px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .result {
+            background: rgba(0, 150, 0, 0.1);
+            border-left: 3px solid #4CAF50;
+        }
+        
+        .error {
+            background: rgba(255, 0, 0, 0.1);
+            border-left: 3px solid var(--youtube-red);
+        }
+        
+        a {
+            color: #4fc3f7;
+            text-decoration: none;
+            font-weight: 500;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        
+        a:hover {
+            color: #81d4fa;
+            text-decoration: underline;
+        }
+        
+        a::after {
+            content: '→';
+            margin-left: 4px;
+            transition: transform 0.2s;
+        }
+        
+        a:hover::after {
+            transform: translateX(3px);
+        }
+        
+        .youtube-icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            background: var(--youtube-red);
+            color: white;
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            margin-right: 8px;
+            font-weight: bold;
+            font-size: 0.8rem;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        @media (max-width: 480px) {
+            .container {
+                padding: 24px 20px;
+            }
+            
+            h1 {
+                font-size: 1.8rem;
+            }
+            
+            button {
+                padding: 14px;
+                font-size: 1rem;
+            }
+        }
+    </style>
 </head>
 <body>
-    <h1>YouTube Downloader</h1>
-    <form action="/formats" method="post">
-        <input type="text" name="url" placeholder="YouTube URL" required>
-        <button type="submit">Get Formats</button>
-    </form>
-
-    {% if formats %}
-        <h2>Choose Format</h2>
-        <form action="/download" method="post">
-            <input type="hidden" name="url" value="{{ url }}">
-            <select name="format_id" required>
-                {% for f in formats %}
-                    <option value="{{ f['format_id'] }}">
-                        {{ f['format_id'] }} | {{ f['ext'] }} | {{ f['resolution'] or f['asr'] or '' }} | {{ f['filesize']|default('') }}
-                    </option>
-                {% endfor %}
-            </select>
-            <button type="submit">Download</button>
+    <div class="container">
+        <div class="header">
+            <h1><span class="youtube-icon">YT</span> Direct Link Generator</h1>
+            <p class="subtitle">Get high-quality direct video links from YouTube without downloading</p>
+        </div>
+        
+        <form action="/get-formats" method="post">
+            <div class="input-group">
+                <input type="text" name="url" placeholder="https://www.youtube.com/watch?v=..." required>
+            </div>
+            <button type="submit">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M19 13H13V11H19V13ZM5 11H8.99V13H5V11Z" fill="white"/>
+                    <path d="M12 2C6.48 2 2 6.48 2 12C2 17.52 6.48 22 12 22C17.52 22 22 17.52 22 12C22 6.48 17.52 2 12 2ZM10 17L15 12L10 7V17Z" fill="white"/>
+                </svg>
+                Show Available Formats
+            </button>
         </form>
-    {% endif %}
 
-    {% if task_id %}
-        <h2>Download Progress</h2>
-        <progress id="progress" value="0" max="100"></progress>
-        <p id="status">Starting...</p>
-        <div id="download-link"></div>
-        <script>checkProgress("{{ task_id }}");</script>
-    {% endif %}
+        {% if error %}
+            <div class="error">
+                <p>
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="vertical-align: middle; margin-right: 6px;">
+                        <path d="M12 2C6.48 2 2 6.48 2 12C2 17.52 6.48 22 12 22C17.52 22 22 17.52 22 12C22 6.48 17.52 2 12 2ZM13 17H11V15H13V17ZM13 13H11V7H13V13Z" fill="var(--youtube-red)"/>
+                    </svg>
+                    {{ error }}
+                </p>
+            </div>
+        {% endif %}
+        
+        {% if video_url %}
+            <div class="result">
+                <p>
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="vertical-align: middle; margin-right: 6px;">
+                        <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z" fill="#4CAF50"/>
+                    </svg>
+                    Video ready! Click below to download.
+                </p>
+                <p style="margin-top: 12px;">
+                    <a href="{{ video_url }}" target="_blank">⬇️ Download Video</a>
+                </p>
+            </div>
+        {% endif %}
+    </div>
+</body>
+</html>
+"""
 
-    {% if error %}
-        <p style="color:red;">Error: {{ error }}</p>
-    {% endif %}
+FORMATS_PAGE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>🎥 Select Video Format</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600&display=swap');
+        
+        :root {
+            --youtube-red: #ff0000;
+            --youtube-red-hover: #cc0000;
+            --glass-bg: rgba(255, 255, 255, 0.08);
+            --glass-border: rgba(255, 255, 255, 0.18);
+            --text-shadow: 0 2px 4px rgba(0,0,0,0.25);
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Poppins', sans-serif;
+            background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);
+            background-attachment: fixed;
+            color: white;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+            overflow-x: hidden;
+            position: relative;
+        }
+        
+        body::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: 
+                radial-gradient(circle at 10% 20%, rgba(255, 0, 0, 0.05) 0%, transparent 20%),
+                radial-gradient(circle at 90% 80%, rgba(0, 100, 255, 0.05) 0%, transparent 20%);
+            pointer-events: none;
+            z-index: -1;
+        }
+        
+        .container {
+            background: var(--glass-bg);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid var(--glass-border);
+            border-radius: 20px;
+            padding: 32px;
+            width: 100%;
+            max-width: 700px;
+            box-shadow: 
+                0 8px 32px rgba(0, 0, 0, 0.3),
+                0 0 15px rgba(255, 0, 0, 0.1);
+            transform: translateY(0);
+            transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }
+        
+        .container:hover {
+            transform: translateY(-5px);
+            box-shadow: 
+                0 12px 40px rgba(0, 0, 0, 0.4),
+                0 0 25px rgba(255, 0, 0, 0.15);
+        }
+        
+        .header {
+            text-align: center;
+            margin-bottom: 28px;
+            position: relative;
+        }
+        
+        h1 {
+            font-size: 2.2rem;
+            font-weight: 600;
+            margin-bottom: 12px;
+            background: linear-gradient(90deg, #ff0000, #ff5e5e);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+            text-shadow: var(--text-shadow);
+            letter-spacing: -0.5px;
+        }
+        
+        .subtitle {
+            color: rgba(255, 255, 255, 0.7);
+            font-size: 1.05rem;
+            max-width: 600px;
+            margin: 0 auto;
+            line-height: 1.5;
+            margin-bottom: 24px;
+        }
+        
+        .format-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        
+        .format-card {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 16px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            border: 2px solid transparent;
+        }
+        
+        .format-card:hover {
+            background: rgba(255, 255, 255, 0.1);
+            transform: translateY(-3px);
+        }
+        
+        .format-card.selected {
+            border-color: var(--youtube-red);
+            background: rgba(255, 0, 0, 0.1);
+            box-shadow: 0 0 0 3px rgba(255, 0, 0, 0.2);
+        }
+        
+        .format-type {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+        
+        .video-type {
+            background: rgba(0, 150, 0, 0.2);
+            color: #81C784;
+        }
+        
+        .audio-type {
+            background: rgba(0, 100, 255, 0.2);
+            color: #64B5F6;
+        }
+        
+        .format-resolution {
+            font-weight: 600;
+            font-size: 1.1rem;
+            margin: 8px 0;
+            color: #fff;
+        }
+        
+        .format-details {
+            color: rgba(255, 255, 255, 0.7);
+            font-size: 0.9rem;
+            line-height: 1.4;
+        }
+        
+        .format-id {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 3px 8px;
+            border-radius: 6px;
+            font-family: monospace;
+            font-size: 0.85rem;
+            margin-top: 8px;
+            display: inline-block;
+        }
+        
+        .controls {
+            display: flex;
+            gap: 16px;
+            margin-top: 24px;
+        }
+        
+        .btn {
+            flex: 1;
+            padding: 14px;
+            border-radius: 14px;
+            font-size: 1.05rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            border: none;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+        
+        .btn-back {
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+        }
+        
+        .btn-back:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+        
+        .btn-download {
+            background: linear-gradient(90deg, var(--youtube-red), #e60000);
+            color: white;
+        }
+        
+        .btn-download:hover {
+            background: linear-gradient(90deg, var(--youtube-red-hover), #b30000);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 15px rgba(255, 0, 0, 0.3);
+        }
+        
+        .btn-download:disabled {
+            background: rgba(128, 128, 128, 0.5);
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+        
+        .selection-summary {
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 12px;
+            padding: 16px;
+            margin-top: 20px;
+            display: none;
+        }
+        
+        .summary-title {
+            font-weight: 600;
+            margin-bottom: 10px;
+            color: #fff;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .summary-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .summary-label {
+            color: rgba(255, 255, 255, 0.7);
+        }
+        
+        .summary-value {
+            font-weight: 500;
+        }
+        
+        .error {
+            padding: 20px;
+            border-radius: 16px;
+            margin-top: 20px;
+            animation: fadeIn 0.4s ease;
+            backdrop-filter: blur(8px);
+            border: 1px solid rgba(255, 0, 0, 0.3);
+            background: rgba(255, 0, 0, 0.1);
+            border-left: 3px solid var(--youtube-red);
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        @media (max-width: 600px) {
+            .format-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .controls {
+                flex-direction: column;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1><span style="display: inline-flex; align-items: center; justify-content: center; background: var(--youtube-red); color: white; width: 28px; height: 28px; border-radius: 50%; margin-right: 8px; font-weight: bold; font-size: 0.8rem;">YT</span> Format Selection</h1>
+            <p class="subtitle">Select your preferred video and audio quality. We'll merge them for the best experience.</p>
+        </div>
+        
+        <form id="formatForm" action="/download" method="post">
+            <input type="hidden" name="url" value="{{ url }}">
+            <input type="hidden" name="video_format" id="videoFormatInput">
+            <input type="hidden" name="audio_format" id="audioFormatInput">
+            
+            <div class="format-grid">
+                {% for f in formats %}
+                    <div class="format-card" 
+                         data-type="{{ f.type }}" 
+                         data-id="{{ f.format_id }}"
+                         data-resolution="{{ f.resolution }}"
+                         data-ext="{{ f.ext }}"
+                         data-note="{{ f.format_note }}"
+                         data-bitrate="{{ f.tbr|round(1) if f.tbr else 'N/A' }}">
+                        <span class="format-type {{ f.type }}-type">{{ f.type|upper }}</span>
+                        <div class="format-resolution">
+                            {% if f.resolution %}{{ f.resolution }}{% else %}{{ f.format_note }}{% endif %}
+                        </div>
+                        <div class="format-details">
+                            {% if f.vcodec and f.vcodec != 'none' %}Video: {{ f.vcodec }}{% endif %}
+                            {% if f.acodec and f.acodec != 'none' %}<br>Audio: {{ f.acodec }}{% endif %}
+                            {% if f.tbr %}<br>Bitrate: {{ f.tbr|round(1) }} kbps{% endif %}
+                            {% if f.filesize %}
+                              <br>Size: 
+                              {% set size = f.filesize %}
+                              {% if size < 1024 %}
+                                {{ size }} B
+                              {% elif size < 1048576 %}
+                                {{ '%.1f'|format(size / 1024) }} KB
+                              {% elif size < 1073741824 %}
+                                {{ '%.1f'|format(size / 1048576) }} MB
+                              {% else %}
+                                {{ '%.1f'|format(size / 1073741824) }} GB
+                              {% endif %}
+                            {% endif %}
+                        </div>
+                        <span class="format-id">ID: {{ f.format_id }}</span>
+                    </div>
+                {% endfor %}
+            </div>
+            
+            <div class="selection-summary" id="selectionSummary">
+                <div class="summary-title">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z" fill="#4CAF50"/>
+                    </svg>
+                    Selected Formats
+                </div>
+                <div class="summary-item">
+                    <span class="summary-label">Video Format:</span>
+                    <span class="summary-value" id="videoSummary">Not selected</span>
+                </div>
+                <div class="summary-item">
+                    <span class="summary-label">Audio Format:</span>
+                    <span class="summary-value" id="audioSummary">Not selected</span>
+                </div>
+            </div>
+            
+            {% if error %}
+                <div class="error">
+                    <p>
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="vertical-align: middle; margin-right: 6px;">
+                            <path d="M12 2C6.48 2 2 6.48 2 12C2 17.52 6.48 22 12 22C17.52 22 22 17.52 22 12C22 6.48 17.52 2 12 2ZM13 17H11V15H13V17ZM13 13H11V7H13V13Z" fill="var(--youtube-red)"/>
+                        </svg>
+                        {{ error }}
+                    </p>
+                </div>
+            {% endif %}
+            
+            <div class="controls">
+                <button type="button" class="btn btn-back" onclick="window.history.back()">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M15 19l-7-7 7-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                    Back
+                </button>
+                <button type="submit" class="btn btn-download" id="downloadBtn" disabled>
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        <polyline points="7 10 12 15 17 10" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        <line x1="12" y1="15" x2="12" y2="3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                    Generate Merged Video
+                </button>
+            </div>
+        </form>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const formatCards = document.querySelectorAll('.format-card');
+            const videoFormatInput = document.getElementById('videoFormatInput');
+            const audioFormatInput = document.getElementById('audioFormatInput');
+            const downloadBtn = document.getElementById('downloadBtn');
+            const selectionSummary = document.getElementById('selectionSummary');
+            const videoSummary = document.getElementById('videoSummary');
+            const audioSummary = document.getElementById('audioSummary');
+            
+            let selectedVideo = null;
+            let selectedAudio = null;
+            
+            formatCards.forEach(card => {
+                card.addEventListener('click', function() {
+                    const type = this.getAttribute('data-type');
+                    const id = this.getAttribute('data-id');
+                    const resolution = this.getAttribute('data-resolution') || this.getAttribute('data-note');
+                    const ext = this.getAttribute('data-ext');
+                    
+                    if (type === 'video') {
+                        document.querySelectorAll('.format-card[data-type="video"].selected').forEach(v => {
+                            v.classList.remove('selected');
+                        });
+                        
+                        this.classList.add('selected');
+                        selectedVideo = id;
+                        videoFormatInput.value = id;
+                        videoSummary.textContent = `${resolution} (${ext})`;
+                    } else if (type === 'audio') {
+                        document.querySelectorAll('.format-card[data-type="audio"].selected').forEach(a => {
+                            a.classList.remove('selected');
+                        });
+                        
+                        this.classList.add('selected');
+                        selectedAudio = id;
+                        audioFormatInput.value = id;
+                        audioSummary.textContent = `${this.getAttribute('data-note') || 'Audio'} (${ext})`;
+                    }
+                    
+                    if (selectedVideo && selectedAudio) {
+                        downloadBtn.disabled = false;
+                        selectionSummary.style.display = 'block';
+                    } else {
+                        downloadBtn.disabled = true;
+                        selectionSummary.style.display = selectedVideo || selectedAudio ? 'block' : 'none';
+                    }
+                });
+            });
+        });
+    </script>
 </body>
 </html>
 """
 
 @app.route("/", methods=["GET"])
 def home():
-    return render_template_string(HTML_PAGE)
+    return render_template_string(HOME_PAGE)
 
-@app.route("/formats", methods=["POST"])
-def formats():
+@app.route("/get-formats", methods=["POST"])
+def get_formats():
     url = request.form.get("url")
+    if not url:
+        return render_template_string(HOME_PAGE, error="No URL provided")
+
     try:
         ydl_opts = {
+            'cookiefile': COOKIES_FILE if cookies_content else None,
+            'quiet': True,
+            'skip_download': True,
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            formats = info.get("formats", [])
+            
+            processed_formats = []
+            for f in formats:
+                if 'vcodec' not in f and 'acodec' not in f:
+                    continue
+                
+                if f.get('vcodec') != 'none' and f.get('acodec') != 'none':
+                    f_type = 'video'
+                elif f.get('vcodec') != 'none' and f.get('acodec') == 'none':
+                    f_type = 'video'
+                elif f.get('vcodec') == 'none' and f.get('acodec') != 'none':
+                    f_type = 'audio'
+                else:
+                    continue
+                
+                processed_formats.append({
+                    'format_id': f.get('format_id', ''),
+                    'resolution': f.get('resolution', ''),
+                    'ext': f.get('ext', ''),
+                    'format_note': f.get('format_note', ''),
+                    'vcodec': f.get('vcodec', 'none'),
+                    'acodec': f.get('acodec', 'none'),
+                    'tbr': f.get('tbr', 0),
+                    'filesize': f.get('filesize', None),
+                    'type': f_type
+                })
+            
+            video_formats = [f for f in processed_formats if f['type'] == 'video']
+            audio_formats = [f for f in processed_formats if f['type'] == 'audio']
+            
+            video_formats.sort(key=lambda x: (
+                -int(x['resolution'].split('x')[1]) if 'x' in x.get('resolution', '') else 0,
+                -x.get('tbr', 0)
+            ), reverse=True)
+            
+            audio_formats.sort(key=lambda x: -x.get('tbr', 0))
+            
+            sorted_formats = video_formats + audio_formats
+            
+            return render_template_string(FORMATS_PAGE, url=url, formats=sorted_formats)
+
+    except Exception as e:
+        import traceback
+        print("❌ get_formats error:")
+        traceback.print_exc()
+        return render_template_string(HOME_PAGE, error=f"Fetch error: {str(e)}")
+
+@app.route("/download", methods=["POST"])
+def download():
+    url = request.form.get("url")
+    video_format = request.form.get("video_format")
+    audio_format = request.form.get("audio_format")
+
+    if not url or not video_format or not audio_format:
+        return render_template_string(HOME_PAGE, error="Missing URL or format selection")
+
+    # First, try to get a combined format (fallback)
+    try:
+        ydl_opts = {
+            'format': 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]',
             'cookiefile': COOKIES_FILE if cookies_content else None,
             'quiet': True,
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
-            formats = info.get("formats", [])
-        return render_template_string(HTML_PAGE, formats=formats, url=url)
-    except Exception as e:
-        print(f"❌ Error fetching formats: {e}")
-        return render_template_string(HTML_PAGE, error=str(e))
+            if info.get('url') and info.get('acodec') != 'none' and info.get('vcodec') != 'none':
+                return render_template_string(HOME_PAGE, video_url=info['url'])
+    except:
+        pass  # Ignore, try streaming merge
 
-@app.route("/download", methods=["POST"])
-def download():
-    url = request.form.get("url")
-    format_id = request.form.get("format_id")
-    task_id = str(uuid.uuid4())
-    progress_data[task_id] = {"status": "downloading", "percent": 0}
+    # If no good combined format, stream-merge
+    def generate():
+        try:
+            signal.signal(signal.SIGALRM, lambda signum, frame: None)
+            signal.alarm(60)  # 60-second timeout
 
-    def hook(d):
-        if d['status'] == 'downloading':
-            percent = d.get('_percent_str', '0%').replace('%', '').strip()
-            try:
-                progress_data[task_id]["percent"] = float(percent)
-            except:
-                progress_data[task_id]["percent"] = 0
-            progress_data[task_id]["status"] = "downloading"
-            print(f"⬇ Downloading... {percent}%")
-        elif d['status'] == 'finished':
-            progress_data[task_id]["status"] = "merging"
-            print("🔄 Merging audio & video...")
+            ydl_opts = {'format': video_format, 'quiet': True, 'cookiefile': COOKIES_FILE if cookies_content else None}
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                video_info = ydl.extract_info(url, download=False)
+                video_url = video_info['url']
 
-    try:
-        ydl_opts = {
-            'cookiefile': COOKIES_FILE if cookies_content else None,
-            'format': format_id + "+bestaudio/best",
-            'merge_output_format': 'mp4',
-            'outtmpl': os.path.join(DOWNLOAD_FOLDER, '%(title)s.%(ext)s'),
-            'quiet': True,
-            'progress_hooks': [hook],
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
+            ydl_opts_audio = {'format': audio_format, 'quiet': True, 'cookiefile': COOKIES_FILE if cookies_content else None}
+            with yt_dlp.YoutubeDL(ydl_opts_audio) as ydl:
+                audio_info = ydl.extract_info(url, download=False)
+                audio_url = audio_info['url']
 
-            # ✅ Always get the final merged file path
-            if "requested_downloads" in info and info["requested_downloads"]:
-                downloaded_file = info["requested_downloads"][0]["filepath"]
-            else:
-                downloaded_file = ydl.prepare_filename(info)
-                if not downloaded_file.endswith(".mp4"):
-                    downloaded_file = downloaded_file.rsplit(".", 1)[0] + ".mp4"
+            cmd = [
+                'ffmpeg', '-y',
+                '-i', video_url,
+                '-i', audio_url,
+                '-c:v', 'copy',
+                '-c:a', 'aac',
+                '-f', 'mp4',
+                '-movflags', 'frag_keyframe+empty_moov',
+                'pipe:1'
+            ]
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                bufsize=65536
+            )
 
-            base_name = os.path.basename(downloaded_file)
+            while True:
+                chunk = process.stdout.read(65536)  # 64KB
+                if not chunk:
+                    break
+                yield chunk
 
-        print(f"✅ Final file saved: {downloaded_file}")
+            process.wait()
+            signal.alarm(0)
+        except Exception as e:
+            print("Stream error:", str(e))
 
-        progress_data[task_id] = {
-            "status": "finished",
-            "url": f"/files/{base_name}"
-        }
-
-        return render_template_string(HTML_PAGE, task_id=task_id)
-    except Exception as e:
-        progress_data[task_id] = {"status": "error", "error": str(e)}
-        print(f"❌ Error during download: {e}")
-        return render_template_string(HTML_PAGE, error=str(e))
-
-@app.route("/progress/<task_id>")
-def progress(task_id):
-    return jsonify(progress_data.get(task_id, {"status": "error", "error": "Invalid task id"}))
-
-@app.route("/files/<path:filename>")
-def serve_file(filename):
-    file_path = os.path.join(DOWNLOAD_FOLDER, filename)
-    if not os.path.exists(file_path):
-        abort(404)
-
-    response = send_from_directory(DOWNLOAD_FOLDER, filename, as_attachment=True)
-
-    # Auto-delete after sending (one-time link)
-    try:
-        os.remove(file_path)
-        print(f"🗑 Deleted after download: {file_path}")
-    except Exception as e:
-        print(f"⚠ Could not delete file: {e}")
-
-    return response
+    headers = {
+        'Content-Type': 'video/mp4',
+        'Content-Disposition': 'attachment; filename="video.mp4"',
+        'Transfer-Encoding': 'chunked'
+    }
+    return Response(generate(), headers=headers)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
