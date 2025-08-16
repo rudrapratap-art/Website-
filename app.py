@@ -52,6 +52,19 @@ HTML_PAGE = """
 </html>
 """
 
+def cleanup_downloads(keep_last=3):
+    """Keep only the last N downloaded files, delete older ones"""
+    files = sorted(
+        [os.path.join(DOWNLOAD_FOLDER, f) for f in os.listdir(DOWNLOAD_FOLDER)],
+        key=os.path.getmtime,
+        reverse=True
+    )
+    for f in files[keep_last:]:
+        try:
+            os.remove(f)
+        except Exception:
+            pass
+
 @app.route("/", methods=["GET"])
 def home():
     return render_template_string(HTML_PAGE)
@@ -78,7 +91,7 @@ def download():
     try:
         ydl_opts = {
             'cookiefile': COOKIES_FILE if cookies_content else None,
-            'format': format_id + "+bestaudio/best",  # merge chosen video with best audio
+            'format': format_id + "+bestaudio/best",
             'merge_output_format': 'mp4',
             'outtmpl': os.path.join(DOWNLOAD_FOLDER, '%(title)s.%(ext)s'),
             'quiet': True,
@@ -86,19 +99,20 @@ def download():
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
 
-            # ✅ Get final merged file path
+            # ✅ Ensure correct extension after ffmpeg merge
             downloaded_file = ydl.prepare_filename(info)
-            if info.get("ext") == "mkv" or info.get("ext") == "webm":
-                # If ffmpeg merged to mp4, fix the extension
+            if not downloaded_file.endswith(".mp4"):
                 downloaded_file = downloaded_file.rsplit(".", 1)[0] + ".mp4"
 
             base_name = os.path.basename(downloaded_file)
+
+        # Cleanup old downloads (keep only 3 latest)
+        cleanup_downloads(keep_last=3)
 
         return render_template_string(HTML_PAGE, video_url=f"/files/{base_name}")
     except Exception as e:
         return render_template_string(HTML_PAGE, error=str(e))
 
-# ====== Route to serve downloaded files ======
 @app.route("/files/<path:filename>")
 def serve_file(filename):
     return send_from_directory(DOWNLOAD_FOLDER, filename, as_attachment=True)
