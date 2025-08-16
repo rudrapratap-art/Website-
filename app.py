@@ -1,8 +1,12 @@
-from flask import Flask, request, render_template_string
+from flask import Flask, request, render_template_string, send_from_directory
 import os
 import yt_dlp
 
 app = Flask(__name__)
+
+# Create downloads folder
+DOWNLOAD_FOLDER = "downloads"
+os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
 
 COOKIES_FILE = "cookies.txt"
 cookies_content = os.environ.get("YOUTUBE_COOKIES")
@@ -15,7 +19,7 @@ HTML_PAGE = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>YouTube Direct Link Generator</title>
+    <title>YouTube Downloader</title>
 </head>
 <body>
     <h1>YouTube Downloader</h1>
@@ -40,7 +44,7 @@ HTML_PAGE = """
     {% endif %}
 
     {% if video_url %}
-        <p><a href="{{ video_url }}" target="_blank">Download Ready</a></p>
+        <p><a href="{{ video_url }}" target="_blank">⬇ Download Ready</a></p>
     {% elif error %}
         <p style="color:red;">Error: {{ error }}</p>
     {% endif %}
@@ -58,7 +62,6 @@ def formats():
     try:
         ydl_opts = {
             'cookiefile': COOKIES_FILE if cookies_content else None,
-            'listformats': True,
             'quiet': True,
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -75,17 +78,30 @@ def download():
     try:
         ydl_opts = {
             'cookiefile': COOKIES_FILE if cookies_content else None,
-            'format': format_id + "+bestaudio/best",
+            'format': format_id + "+bestaudio/best",  # merge chosen video with best audio
             'merge_output_format': 'mp4',
-            'outtmpl': '%(title)s.%(ext)s',
+            'outtmpl': os.path.join(DOWNLOAD_FOLDER, '%(title)s.%(ext)s'),
             'quiet': True,
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
-            video_url = info.get("requested_downloads", [{}])[0].get("filepath", "")
-        return render_template_string(HTML_PAGE, video_url=video_url)
+
+            # ✅ Get final merged file path
+            downloaded_file = ydl.prepare_filename(info)
+            if info.get("ext") == "mkv" or info.get("ext") == "webm":
+                # If ffmpeg merged to mp4, fix the extension
+                downloaded_file = downloaded_file.rsplit(".", 1)[0] + ".mp4"
+
+            base_name = os.path.basename(downloaded_file)
+
+        return render_template_string(HTML_PAGE, video_url=f"/files/{base_name}")
     except Exception as e:
         return render_template_string(HTML_PAGE, error=str(e))
+
+# ====== Route to serve downloaded files ======
+@app.route("/files/<path:filename>")
+def serve_file(filename):
+    return send_from_directory(DOWNLOAD_FOLDER, filename, as_attachment=True)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
