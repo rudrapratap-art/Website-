@@ -29,11 +29,13 @@ HTML_PAGE = """
             fetch('/progress/' + task_id)
             .then(response => response.json())
             .then(data => {
-                if (data.status === "downloading") {
+                if (data.status === "downloading" || data.status === "merging") {
                     document.getElementById("progress").value = data.percent;
+                    document.getElementById("status").innerText = data.status + " (" + data.percent + "%)";
                     setTimeout(() => checkProgress(task_id), 1000);
                 } else if (data.status === "finished") {
                     document.getElementById("progress").value = 100;
+                    document.getElementById("status").innerText = "✅ Finished!";
                     document.getElementById("download-link").innerHTML = 
                         '<a href="' + data.url + '" target="_blank">⬇ Download Ready</a>';
                 } else if (data.status === "error") {
@@ -69,6 +71,7 @@ HTML_PAGE = """
     {% if task_id %}
         <h2>Download Progress</h2>
         <progress id="progress" value="0" max="100"></progress>
+        <p id="status">Starting...</p>
         <div id="download-link"></div>
         <script>checkProgress("{{ task_id }}");</script>
     {% endif %}
@@ -97,6 +100,7 @@ def formats():
             formats = info.get("formats", [])
         return render_template_string(HTML_PAGE, formats=formats, url=url)
     except Exception as e:
+        print(f"❌ Error fetching formats: {e}")
         return render_template_string(HTML_PAGE, error=str(e))
 
 @app.route("/download", methods=["POST"])
@@ -109,9 +113,15 @@ def download():
     def hook(d):
         if d['status'] == 'downloading':
             percent = d.get('_percent_str', '0%').replace('%', '').strip()
-            progress_data[task_id]["percent"] = float(percent)
+            try:
+                progress_data[task_id]["percent"] = float(percent)
+            except:
+                progress_data[task_id]["percent"] = 0
+            progress_data[task_id]["status"] = "downloading"
+            print(f"⬇ Downloading... {percent}%")
         elif d['status'] == 'finished':
             progress_data[task_id]["status"] = "merging"
+            print("🔄 Merging audio & video...")
 
     try:
         ydl_opts = {
@@ -125,10 +135,17 @@ def download():
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
 
-            downloaded_file = ydl.prepare_filename(info)
-            if not downloaded_file.endswith(".mp4"):
-                downloaded_file = downloaded_file.rsplit(".", 1)[0] + ".mp4"
+            # ✅ Always get the final merged file path
+            if "requested_downloads" in info and info["requested_downloads"]:
+                downloaded_file = info["requested_downloads"][0]["filepath"]
+            else:
+                downloaded_file = ydl.prepare_filename(info)
+                if not downloaded_file.endswith(".mp4"):
+                    downloaded_file = downloaded_file.rsplit(".", 1)[0] + ".mp4"
+
             base_name = os.path.basename(downloaded_file)
+
+        print(f"✅ Final file saved: {downloaded_file}")
 
         progress_data[task_id] = {
             "status": "finished",
@@ -138,6 +155,7 @@ def download():
         return render_template_string(HTML_PAGE, task_id=task_id)
     except Exception as e:
         progress_data[task_id] = {"status": "error", "error": str(e)}
+        print(f"❌ Error during download: {e}")
         return render_template_string(HTML_PAGE, error=str(e))
 
 @app.route("/progress/<task_id>")
@@ -155,8 +173,9 @@ def serve_file(filename):
     # Auto-delete after sending (one-time link)
     try:
         os.remove(file_path)
-    except Exception:
-        pass
+        print(f"🗑 Deleted after download: {file_path}")
+    except Exception as e:
+        print(f"⚠ Could not delete file: {e}")
 
     return response
 
