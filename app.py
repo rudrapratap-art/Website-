@@ -636,7 +636,19 @@ FORMATS_PAGE = """
                             {% if f.vcodec and f.vcodec != 'none' %}Video: {{ f.vcodec }}{% endif %}
                             {% if f.acodec and f.acodec != 'none' %}<br>Audio: {{ f.acodec }}{% endif %}
                             {% if f.tbr %}<br>Bitrate: {{ f.tbr|round(1) }} kbps{% endif %}
-                            {% if f filesize %}<br>Size: {{ f.filesize|filesizeformat }}{% endif %}
+                            {% if f.filesize %}
+                              <br>Size: 
+                              {% set size = f.filesize %}
+                              {% if size < 1024 %}
+                                {{ size }} B
+                              {% elif size < 1048576 %}
+                                {{ '%.1f'|format(size / 1024) }} KB
+                              {% elif size < 1073741824 %}
+                                {{ '%.1f'|format(size / 1048576) }} MB
+                              {% else %}
+                                {{ '%.1f'|format(size / 1073741824) }} GB
+                              {% endif %}
+                            {% endif %}
                         </div>
                         <span class="format-id">ID: {{ f.format_id }}</span>
                     </div>
@@ -711,7 +723,6 @@ FORMATS_PAGE = """
                     const ext = this.getAttribute('data-ext');
                     
                     if (type === 'video') {
-                        // Deselect previous video
                         document.querySelectorAll('.format-card[data-type="video"].selected').forEach(v => {
                             v.classList.remove('selected');
                         });
@@ -721,7 +732,6 @@ FORMATS_PAGE = """
                         videoFormatInput.value = id;
                         videoSummary.textContent = `${resolution} (${ext})`;
                     } else if (type === 'audio') {
-                        // Deselect previous audio
                         document.querySelectorAll('.format-card[data-type="audio"].selected').forEach(a => {
                             a.classList.remove('selected');
                         });
@@ -732,7 +742,6 @@ FORMATS_PAGE = """
                         audioSummary.textContent = `${this.getAttribute('data-note') || 'Audio'} (${ext})`;
                     }
                     
-                    // Enable download button if both are selected
                     if (selectedVideo && selectedAudio) {
                         downloadBtn.disabled = false;
                         selectionSummary.style.display = 'block';
@@ -769,14 +778,11 @@ def get_formats():
             info = ydl.extract_info(url, download=False)
             formats = info.get("formats", [])
             
-            # Filter and categorize formats
             processed_formats = []
             for f in formats:
-                # Skip formats without video or audio info
                 if 'vcodec' not in f and 'acodec' not in f:
                     continue
                 
-                # Determine format type
                 if f.get('vcodec') != 'none' and f.get('acodec') != 'none':
                     f_type = 'video'
                 elif f.get('vcodec') != 'none' and f.get('acodec') == 'none':
@@ -786,7 +792,6 @@ def get_formats():
                 else:
                     continue
                 
-                # Add to processed list
                 processed_formats.append({
                     'format_id': f.get('format_id', ''),
                     'resolution': f.get('resolution', ''),
@@ -795,24 +800,20 @@ def get_formats():
                     'vcodec': f.get('vcodec', 'none'),
                     'acodec': f.get('acodec', 'none'),
                     'tbr': f.get('tbr', 0),
-                    'filesize': f.get('filesize', 0),
+                    'filesize': f.get('filesize', None),
                     'type': f_type
                 })
             
-            # Sort by quality: video formats by resolution, audio by bitrate
             video_formats = [f for f in processed_formats if f['type'] == 'video']
             audio_formats = [f for f in processed_formats if f['type'] == 'audio']
             
-            # Sort video by resolution (highest first)
             video_formats.sort(key=lambda x: (
                 -int(x['resolution'].split('x')[1]) if 'x' in x.get('resolution', '') else 0,
                 -x.get('tbr', 0)
             ), reverse=True)
             
-            # Sort audio by bitrate (highest first)
             audio_formats.sort(key=lambda x: -x.get('tbr', 0))
             
-            # Combine lists (videos first, then audio)
             sorted_formats = video_formats + audio_formats
             
             return render_template_string(FORMATS_PAGE, url=url, formats=sorted_formats)
@@ -830,13 +831,11 @@ def download():
         return render_template_string(HOME_PAGE, error="Missing URL or format selection")
 
     try:
-        # Generate unique filename
         file_id = str(uuid.uuid4())
         video_path = os.path.join(tempfile.gettempdir(), f"{file_id}_video.mp4")
         audio_path = os.path.join(tempfile.gettempdir(), f"{file_id}_audio.m4a")
         output_path = os.path.join(MERGED_FILES_DIR, f"{file_id}.mp4")
         
-        # Download video stream
         ydl_opts_video = {
             'cookiefile': COOKIES_FILE if cookies_content else None,
             'format': video_format,
@@ -846,7 +845,6 @@ def download():
         with yt_dlp.YoutubeDL(ydl_opts_video) as ydl:
             ydl.download([url])
         
-        # Download audio stream
         ydl_opts_audio = {
             'cookiefile': COOKIES_FILE if cookies_content else None,
             'format': audio_format,
@@ -856,7 +854,6 @@ def download():
         with yt_dlp.YoutubeDL(ydl_opts_audio) as ydl:
             ydl.download([url])
         
-        # Merge with ffmpeg
         cmd = [
             'ffmpeg', '-y',
             '-i', video_path,
@@ -868,17 +865,12 @@ def download():
         ]
         subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         
-        # Clean up temporary files
         os.remove(video_path)
         os.remove(audio_path)
         
-        # Generate direct download link
         download_url = f"/download-file/{file_id}.mp4"
         
-        # Create response with auto-expiring link
         response = make_response(render_template_string(HOME_PAGE, video_url=download_url))
-        
-        # Set cache control headers for the page (not the video file)
         response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
         response.headers['Pragma'] = 'no-cache'
         response.headers['Expires'] = '0'
@@ -886,7 +878,6 @@ def download():
         return response
 
     except Exception as e:
-        # Clean up any partial files
         if 'video_path' in locals() and os.path.exists(video_path):
             os.remove(video_path)
         if 'audio_path' in locals() and os.path.exists(audio_path):
@@ -897,22 +888,18 @@ def download():
 def download_file(filename):
     file_path = os.path.join(MERGED_FILES_DIR, filename)
     
-    # Verify file exists
     if not os.path.exists(file_path):
         return "File not found", 404
     
-    # Set up auto-cleanup after download
     def cleanup():
-        time.sleep(30)  # Wait 30 seconds after download
+        time.sleep(30)
         try:
             os.remove(file_path)
         except:
             pass
     
-    # Start cleanup thread
     threading.Thread(target=cleanup).start()
     
-    # Serve the file
     response = send_file(
         file_path,
         mimetype='video/mp4',
@@ -920,26 +907,23 @@ def download_file(filename):
         download_name=filename
     )
     
-    # Set headers for better browser handling
     response.headers['Content-Disposition'] = f'attachment; filename="{filename}"'
     response.headers['X-Content-Type-Options'] = 'nosniff'
     
     return response
 
-# ====== Cleanup expired files ======
 def cleanup_expired_files():
     while True:
-        time.sleep(3600)  # Check hourly
+        time.sleep(3600)
         try:
             now = time.time()
             for file in os.listdir(MERGED_FILES_DIR):
                 file_path = os.path.join(MERGED_FILES_DIR, file)
-                if os.path.isfile(file_path) and now - os.path.getmtime(file_path) > 3600:  # 1 hour
+                if os.path.isfile(file_path) and now - os.path.getmtime(file_path) > 3600:
                     os.remove(file_path)
         except Exception as e:
             print(f"Cleanup error: {e}")
 
-# Start cleanup thread
 cleanup_thread = threading.Thread(target=cleanup_expired_files, daemon=True)
 cleanup_thread.start()
 
