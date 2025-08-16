@@ -3,17 +3,15 @@ services:
     name: video-downloader
     env: python
     plan: free
-    region: oregon  # Optional: set your preferred region
 
-    # 🔧 Build command: Install ffmpeg first, then Python dependencies
     buildCommand: |
       apt-get update && apt-get install -y ffmpeg
-      pip install -r requirements.txt
+      pip install yt-dlp Flask gunicorn
 
-    # ▶️ Start command: Use PORT from environment
-    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 2 --timeout 60
 
-    # 🌐 Expose the port
     envVars:
       - key: PORT
-        value: 10000  # Render assigns port via $PORT, but you can set default
+        value: 10000
+      - key: PYTHONUNBUFFERED
+        value: '1'
