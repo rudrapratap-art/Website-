@@ -1,12 +1,16 @@
-from flask import Flask, request, render_template_string, send_from_directory
+from flask import Flask, request, render_template_string, send_from_directory, jsonify, abort
 import os
 import yt_dlp
+import uuid
 
 app = Flask(__name__)
 
 # Create downloads folder
 DOWNLOAD_FOLDER = "downloads"
 os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
+
+# Store progress in memory
+progress_data = {}
 
 COOKIES_FILE = "cookies.txt"
 cookies_content = os.environ.get("YOUTUBE_COOKIES")
@@ -20,6 +24,25 @@ HTML_PAGE = """
 <html>
 <head>
     <title>YouTube Downloader</title>
+    <script>
+        function checkProgress(task_id) {
+            fetch('/progress/' + task_id)
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === "downloading") {
+                    document.getElementById("progress").value = data.percent;
+                    setTimeout(() => checkProgress(task_id), 1000);
+                } else if (data.status === "finished") {
+                    document.getElementById("progress").value = 100;
+                    document.getElementById("download-link").innerHTML = 
+                        '<a href="' + data.url + '" target="_blank">⬇ Download Ready</a>';
+                } else if (data.status === "error") {
+                    document.getElementById("download-link").innerHTML = 
+                        '<p style="color:red;">Error: ' + data.error + '</p>';
+                }
+            });
+        }
+    </script>
 </head>
 <body>
     <h1>YouTube Downloader</h1>
@@ -43,27 +66,19 @@ HTML_PAGE = """
         </form>
     {% endif %}
 
-    {% if video_url %}
-        <p><a href="{{ video_url }}" target="_blank">⬇ Download Ready</a></p>
-    {% elif error %}
+    {% if task_id %}
+        <h2>Download Progress</h2>
+        <progress id="progress" value="0" max="100"></progress>
+        <div id="download-link"></div>
+        <script>checkProgress("{{ task_id }}");</script>
+    {% endif %}
+
+    {% if error %}
         <p style="color:red;">Error: {{ error }}</p>
     {% endif %}
 </body>
 </html>
 """
-
-def cleanup_downloads(keep_last=3):
-    """Keep only the last N downloaded files, delete older ones"""
-    files = sorted(
-        [os.path.join(DOWNLOAD_FOLDER, f) for f in os.listdir(DOWNLOAD_FOLDER)],
-        key=os.path.getmtime,
-        reverse=True
-    )
-    for f in files[keep_last:]:
-        try:
-            os.remove(f)
-        except Exception:
-            pass
 
 @app.route("/", methods=["GET"])
 def home():
@@ -88,6 +103,16 @@ def formats():
 def download():
     url = request.form.get("url")
     format_id = request.form.get("format_id")
+    task_id = str(uuid.uuid4())
+    progress_data[task_id] = {"status": "downloading", "percent": 0}
+
+    def hook(d):
+        if d['status'] == 'downloading':
+            percent = d.get('_percent_str', '0%').replace('%', '').strip()
+            progress_data[task_id]["percent"] = float(percent)
+        elif d['status'] == 'finished':
+            progress_data[task_id]["status"] = "merging"
+
     try:
         ydl_opts = {
             'cookiefile': COOKIES_FILE if cookies_content else None,
@@ -95,27 +120,45 @@ def download():
             'merge_output_format': 'mp4',
             'outtmpl': os.path.join(DOWNLOAD_FOLDER, '%(title)s.%(ext)s'),
             'quiet': True,
+            'progress_hooks': [hook],
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
 
-            # ✅ Ensure correct extension after ffmpeg merge
             downloaded_file = ydl.prepare_filename(info)
             if not downloaded_file.endswith(".mp4"):
                 downloaded_file = downloaded_file.rsplit(".", 1)[0] + ".mp4"
-
             base_name = os.path.basename(downloaded_file)
 
-        # Cleanup old downloads (keep only 3 latest)
-        cleanup_downloads(keep_last=3)
+        progress_data[task_id] = {
+            "status": "finished",
+            "url": f"/files/{base_name}"
+        }
 
-        return render_template_string(HTML_PAGE, video_url=f"/files/{base_name}")
+        return render_template_string(HTML_PAGE, task_id=task_id)
     except Exception as e:
+        progress_data[task_id] = {"status": "error", "error": str(e)}
         return render_template_string(HTML_PAGE, error=str(e))
+
+@app.route("/progress/<task_id>")
+def progress(task_id):
+    return jsonify(progress_data.get(task_id, {"status": "error", "error": "Invalid task id"}))
 
 @app.route("/files/<path:filename>")
 def serve_file(filename):
-    return send_from_directory(DOWNLOAD_FOLDER, filename, as_attachment=True)
+    file_path = os.path.join(DOWNLOAD_FOLDER, filename)
+    if not os.path.exists(file_path):
+        abort(404)
+
+    response = send_from_directory(DOWNLOAD_FOLDER, filename, as_attachment=True)
+
+    # Auto-delete after sending (one-time link)
+    try:
+        os.remove(file_path)
+    except Exception:
+        pass
+
+    return response
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
