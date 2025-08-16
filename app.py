@@ -1,10 +1,9 @@
-from flask import Flask, request, render_template_string, send_file, make_response
+from flask import Flask, request, render_template_string, Response
 import os
 import yt_dlp
 import subprocess
-import uuid
+import signal
 import threading
-import time
 
 app = Flask(__name__)
 
@@ -782,6 +781,7 @@ def get_formats():
             'cookiefile': COOKIES_FILE if cookies_content else None,
             'quiet': True,
             'skip_download': True,
+            'no_warnings': True,
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -838,102 +838,83 @@ def download():
     url = request.form.get("url")
     video_format = request.form.get("video_format")
     audio_format = request.form.get("audio_format")
-    
+
     if not url or not video_format or not audio_format:
         return render_template_string(HOME_PAGE, error="Missing URL or format selection")
 
-    try:
-        file_id = str(uuid.uuid4())
-        video_path = f"/tmp/{file_id}_video.mp4"
-        audio_path = f"/tmp/{file_id}_audio.m4a"
-        output_path = f"/tmp/{file_id}.mp4"
-        
-        print(f"📥 Starting download for: {url}")
-        print(f"📹 Video format: {video_format}")
-        print(f"🎵 Audio format: {audio_format}")
-
-        # Download video
-        ydl_opts_video = {
-            'cookiefile': COOKIES_FILE if cookies_content else None,
-            'format': video_format,
-            'outtmpl': video_path,
-            'quiet': False,
-        }
-        with yt_dlp.YoutubeDL(ydl_opts_video) as ydl:
-            print("⏬ Downloading video...")
-            ydl.download([url])
-
-        # Download audio
-        ydl_opts_audio = {
-            'cookiefile': COOKIES_FILE if cookies_content else None,
-            'format': audio_format,
-            'outtmpl': audio_path,
-            'quiet': False,
-        }
-        with yt_dlp.YoutubeDL(ydl_opts_audio) as ydl:
-            print("⏬ Downloading audio...")
-            ydl.download([url])
-
-        # Merge with ffmpeg
-        print("🎬 Merging with ffmpeg...")
-        cmd = [
-            'ffmpeg', '-y',
-            '-i', video_path,
-            '-i', audio_path,
-            '-c:v', 'copy',
-            '-c:a', 'aac',
-            '-strict', 'experimental',
-            output_path
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        
-        if result.returncode != 0:
-            print("❌ FFmpeg failed:")
-            print("STDOUT:", result.stdout)
-            print("STDERR:", result.stderr)
-            return render_template_string(HOME_PAGE, error=f"Merge failed: {result.stderr}")
-
-        print(f"✅ Merged video saved to {output_path}")
-
-        # Cleanup
-        os.remove(video_path)
-        os.remove(audio_path)
-        print("🧹 Temp files removed")
-
-        download_url = f"/download-file/{file_id}.mp4"
-        return render_template_string(HOME_PAGE, video_url=download_url)
-
-    except Exception as e:
-        print("💥 Server error:")
-        import traceback
-        traceback.print_exc()
-        return render_template_string(HOME_PAGE, error=f"Server error: {str(e)}")
-
-@app.route("/download-file/<filename>")
-def download_file(filename):
-    file_path = f"/tmp/{filename}"
-    if not os.path.exists(file_path):
-        return "File not found", 404
-
-    def cleanup():
-        time.sleep(30)
+    def generate():
         try:
-            os.remove(file_path)
-            print(f"🗑️ Cleaned up {file_path}")
-        except Exception as e:
-            print(f"Cleanup error: {e}")
-    
-    threading.Thread(target=cleanup, daemon=True).start()
+            # Set timeout (90 seconds)
+            signal.signal(signal.SIGALRM, lambda signum, frame: None)
+            signal.alarm(90)
 
-    response = send_file(
-        file_path,
-        mimetype='video/mp4',
-        as_attachment=True,
-        download_name=filename
-    )
-    response.headers['Content-Disposition'] = f'attachment; filename="{filename}"'
-    response.headers['X-Content-Type-Options'] = 'nosniff'
-    return response
+            # Get video stream URL
+            ydl_opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'format': video_format,
+                'cookiefile': COOKIES_FILE if cookies_content else None,
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                video_url = info['url']
+
+            # Get audio stream URL
+            ydl_opts_audio = {
+                'quiet': True,
+                'no_warnings': True,
+                'format': audio_format,
+                'cookiefile': COOKIES_FILE if cookies_content else None,
+            }
+            with yt_dlp.YoutubeDL(ydl_opts_audio) as ydl:
+                info = ydl.extract_info(url, download=False)
+                audio_url = info['url']
+
+            # Stream-merge with ffmpeg
+            cmd = [
+                'ffmpeg', '-y',
+                '-i', video_url,
+                '-i', audio_url,
+                '-c:v', 'copy',
+                '-c:a', 'aac',
+                '-f', 'mp4',
+                '-movflags', 'frag_keyframe+empty_moov',
+                'pipe:1'
+            ]
+
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                bufsize=1024*1024,
+                preexec_fn=os.setsid
+            )
+
+            while True:
+                chunk = process.stdout.read(1024*1024)  # 1MB chunks
+                if not chunk:
+                    break
+                yield chunk
+
+            process.wait()
+            if process.returncode != 0:
+                error = process.stderr.read().decode()
+                print("FFmpeg error:", error)
+                yield b"Error during streaming."
+
+        except Exception as e:
+            print("Stream error:", str(e))
+            yield f"Error: {str(e)}".encode()
+        finally:
+            signal.alarm(0)
+
+    headers = {
+        'Content-Type': 'video/mp4',
+        'Content-Disposition': 'attachment; filename="video.mp4"',
+        'Transfer-Encoding': 'chunked'
+    }
+
+    return Response(generate(), headers=headers)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
