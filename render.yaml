@@ -1,7 +1,19 @@
 services:
   - type: web
     name: video-downloader
-    env: python
-    plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: python app.py
+    runtime: python
+    env: prod
+    region: oregon
+
+    # Install ffmpeg before starting the app
+    buildCommand: |
+      apt-get update && apt-get install -y ffmpeg
+      pip install -r requirements.txt
+
+    startCommand: gunicorn app:app
+
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: YOUTUBE_COOKIES
+        value: {{ your_cookies_here }}
