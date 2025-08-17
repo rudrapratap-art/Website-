@@ -4,7 +4,7 @@ import yt_dlp
 
 app = Flask(__name__)
 
-# Save cookies if provided
+# ====== Save cookies from environment variable ======
 COOKIES_FILE = "cookies.txt"
 cookies_content = os.environ.get("YOUTUBE_COOKIES")
 if cookies_content:
@@ -14,7 +14,7 @@ if cookies_content:
 else:
     print("⚠ No cookies found in environment variable YOUTUBE_COOKIES.")
 
-# ====== HTML Template with Interactive UI ======
+# ====== HTML Template (Premium Glass-Morphism UI) ======
 HTML_PAGE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -289,10 +289,10 @@ HTML_PAGE = """
     <div class="container">
         <div class="header">
             <h1><span class="youtube-icon">YT</span> Direct Link Generator</h1>
-            <p class="subtitle">Get high-quality direct video links from YouTube in seconds</p>
+            <p class="subtitle">Get high-quality direct video links from YouTube without downloading</p>
         </div>
         
-        <form method="post" action="/download">
+        <form action="/download" method="post">
             <div class="input-group">
                 <input type="text" name="url" placeholder="https://www.youtube.com/watch?v=..." required>
             </div>
@@ -301,7 +301,7 @@ HTML_PAGE = """
                     <path d="M19 13H13V11H19V13ZM5 11H8.99V13H5V11Z" fill="white"/>
                     <path d="M12 2C6.48 2 2 6.48 2 12C2 17.52 6.48 22 12 22C17.52 22 22 17.52 22 12C22 6.48 17.52 2 12 2ZM10 17L15 12L10 7V17Z" fill="white"/>
                 </svg>
-                Get Direct Link
+                Generate Direct Link
             </button>
         </form>
 
@@ -311,11 +311,9 @@ HTML_PAGE = """
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="vertical-align: middle; margin-right: 6px;">
                         <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z" fill="#4CAF50"/>
                     </svg>
-                    Best quality video found! Click below to download.
+                    Direct video link generated successfully
                 </p>
-                <p style="margin-top: 12px;">
-                    <a href="{{ video_url }}" target="_blank">⬇️ Download Video Now</a>
-                </p>
+                <p style="margin-top: 12px;"><a href="{{ video_url }}" target="_blank">Play video now <span style="display: inline-block; transition: transform 0.2s;">→</span></a></p>
             </div>
         {% elif error %}
             <div class="error">
@@ -331,7 +329,7 @@ HTML_PAGE = """
 </body>
 </html>
 """
-
+# ====== Routes ======
 @app.route("/", methods=["GET"])
 def home():
     return render_template_string(HTML_PAGE)
@@ -340,40 +338,21 @@ def home():
 def download():
     url = request.form.get("url")
     if not url:
-        return render_template_string(HTML_PAGE, error="Please enter a YouTube URL")
+        return render_template_string(HTML_PAGE, error="No URL provided")
 
     try:
-        # Get the BEST available combined format (no merge needed)
         ydl_opts = {
-            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
             'cookiefile': COOKIES_FILE if cookies_content else None,
+            'format': 'best',
             'quiet': True,
-            'no_warnings': True,
         }
-        
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
-            
-            # Find best format with both video and audio
-            video_url = None
-            for f in info.get('formats', []):
-                if (f.get('vcodec') != 'none' and 
-                    f.get('acodec') != 'none' and 
-                    f.get('ext') == 'mp4'):
-                    video_url = f['url']
-                    break
-            
-            # Fallback to any direct URL
-            if not video_url and info.get('url'):
-                video_url = info['url']
-            
-            if not video_url:
-                return render_template_string(HTML_PAGE, error="No playable format found")
-
+            video_url = info.get("url")
         return render_template_string(HTML_PAGE, video_url=video_url)
 
     except Exception as e:
-        return render_template_string(HTML_PAGE, error=f"Failed to process video: {str(e)}")
+        return render_template_string(HTML_PAGE, error=str(e))
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
